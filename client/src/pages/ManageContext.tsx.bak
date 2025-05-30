@@ -1,0 +1,940 @@
+import React, { useState } from 'react';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
+} from '@/components/ui/table';
+import { 
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogTrigger,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Label } from '@/components/ui/label';
+import { Plus, Edit, Trash2, RefreshCw } from 'lucide-react';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useQuery, useMutation } from '@tanstack/react-query';
+import { useAuth } from '@/components/AuthProvider';
+import { apiRequest } from '@/lib/queryClient';
+import { queryClient } from '@/lib/queryClient';
+import { useToast } from '@/hooks/use-toast';
+import { format } from 'date-fns';
+import { Context, insertContextSchema, NamingConvention, InsertNamingConvention } from '@shared/schema';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '@/components/ui/form';
+import { 
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+
+// Extend the context schema with validation
+const formSchema = insertContextSchema.extend({
+  sharePointUrl: z.string().url('Please enter a valid SharePoint URL').startsWith('https://', 'URL must start with https://'),
+  name: z.string().min(3, 'Name must be at least 3 characters'),
+  description: z.string().optional(),
+});
+
+type FormValues = z.infer<typeof formSchema>;
+
+const ManageContext: React.FC = () => {
+  const { user, isAdmin } = useAuth();
+  const { toast } = useToast();
+  const [isOpen, setIsOpen] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [currentContext, setCurrentContext] = useState<Context | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [contextToDelete, setContextToDelete] = useState<Context | null>(null);
+  const [trainDialogOpen, setTrainDialogOpen] = useState(false);
+  const [contextToTrain, setContextToTrain] = useState<Context | null>(null);
+  const [isTraining, setIsTraining] = useState(false);
+  const [department, setDepartment] = useState('');
+  const [division, setDivision] = useState('');
+  const [section, setSection] = useState('');
+  const [selectedPrefix, setSelectedPrefix] = useState<string | null>(null);
+  
+  // Check permission - both Admin and Super Admin can access this page
+  if (!isAdmin) {
+    return (
+      <div className="text-center py-8">
+        <h1 className="text-2xl font-semibold mb-4">Unauthorized Access</h1>
+        <p className="text-gray-600">This page is only accessible to Admin users.</p>
+      </div>
+    );
+  }
+
+  // Set up form
+  const form = useForm<FormValues>({
+    resolver: zodResolver(formSchema),
+    defaultValues: {
+      name: '',
+      description: '',
+      sharePointUrl: '',
+    },
+  });
+
+  // Fetch contexts
+  const { data: contexts = [], isLoading } = useQuery({
+    queryKey: ['/api/contexts'],
+    enabled: !!user && isAdmin,
+  });
+  
+  // Fetch naming conventions
+  const { data: namingConventions = [] } = useQuery({
+    queryKey: ['/api/naming-conventions'],
+    enabled: !!user && isAdmin,
+  });
+  
+  // Save naming convention mutation
+  const saveNamingConventionMutation = useMutation({
+    mutationFn: async (data: {
+      department: string;
+      division: string | null;
+      section: string | null;
+      createdBy: number | null;
+    }) => {
+      // Client-side permission check
+      if (!isAdmin) {
+        throw new Error("Admin access required");
+      }
+      
+      return apiRequest('POST', '/api/naming-conventions', data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/naming-conventions'] });
+      toast({
+        title: 'Naming Convention Saved',
+        description: `The naming convention has been saved successfully.`,
+      });
+      
+      // Clear form fields after successful save
+      setDepartment('');
+      setDivision('');
+      setSection('');
+    },
+    onError: (error) => {
+      toast({
+        title: 'Error',
+        description: 'Failed to save naming convention',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // Add context mutation
+  const addMutation = useMutation({
+    mutationFn: async (data: FormValues) => {
+      return apiRequest('POST', '/api/contexts', data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/contexts'] });
+      toast({
+        title: 'Context Added',
+        description: 'The context has been successfully added',
+      });
+      setIsOpen(false);
+      form.reset();
+    },
+    onError: (error) => {
+      toast({
+        title: 'Error',
+        description: 'Failed to add context. Please try again.',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // Edit context mutation
+  const editMutation = useMutation({
+    mutationFn: async (data: FormValues & { id: number }) => {
+      return apiRequest('PATCH', `/api/contexts/${data.id}`, {
+        name: data.name,
+        description: data.description,
+        sharePointUrl: data.sharePointUrl,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/contexts'] });
+      toast({
+        title: 'Context Updated',
+        description: 'The context has been successfully updated',
+      });
+      setIsOpen(false);
+      form.reset();
+    },
+    onError: (error) => {
+      toast({
+        title: 'Error',
+        description: 'Failed to update context. Please try again.',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // Delete context mutation
+  const deleteMutation = useMutation({
+    mutationFn: async (contextId: number) => {
+      return apiRequest('DELETE', `/api/contexts/${contextId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/contexts'] });
+      toast({
+        title: 'Context Deleted',
+        description: 'The context has been successfully deleted',
+      });
+      setDeleteDialogOpen(false);
+      setContextToDelete(null);
+    },
+    onError: (error) => {
+      toast({
+        title: 'Error',
+        description: 'Failed to delete context. Please try again.',
+        variant: 'destructive',
+      });
+    },
+  });
+  
+  // Train model mutation
+  const trainModelMutation = useMutation({
+    mutationFn: async (contextId: number) => {
+      return apiRequest('POST', '/api/model/train', { contextId });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/contexts'] });
+      toast({
+        title: 'Model Training Started',
+        description: 'The Llama model is now being trained with your document context. This may take some time.',
+      });
+      setTrainDialogOpen(false);
+      setContextToTrain(null);
+      setIsTraining(false);
+    },
+    onError: (error) => {
+      toast({
+        title: 'Error',
+        description: 'Failed to start model training. Please try again.',
+        variant: 'destructive',
+      });
+      setIsTraining(false);
+    },
+  });
+
+  if (!isAdmin) {
+    return (
+      <div className="text-center py-8">
+        <h1 className="text-2xl font-semibold mb-4">Unauthorized Access</h1>
+        <p className="text-gray-600">You do not have permission to access this page.</p>
+      </div>
+    );
+  }
+
+  const handleAddButtonClick = () => {
+    setIsEditMode(false);
+    setCurrentContext(null);
+    form.reset({
+      name: '',
+      description: '',
+      sharePointUrl: '',
+    });
+    setIsOpen(true);
+  };
+
+  const handleEditButtonClick = (context: Context) => {
+    setIsEditMode(true);
+    setCurrentContext(context);
+    form.reset({
+      name: context.name,
+      description: context.description || '',
+      sharePointUrl: context.sharePointUrl,
+    });
+    setIsOpen(true);
+  };
+
+  const handleDeleteButtonClick = (context: Context) => {
+    setContextToDelete(context);
+    setDeleteDialogOpen(true);
+  };
+  
+  const handleTrainModelClick = (context: Context) => {
+    setContextToTrain(context);
+    setTrainDialogOpen(true);
+  };
+
+  const onSubmit = (data: FormValues) => {
+    if (isEditMode && currentContext) {
+      editMutation.mutate({ ...data, id: currentContext.id });
+    } else {
+      addMutation.mutate(data);
+    }
+  };
+
+  const handleDeleteConfirm = () => {
+    if (contextToDelete) {
+      deleteMutation.mutate(contextToDelete.id);
+    }
+  };
+  
+  const handleTrainModelConfirm = () => {
+    if (contextToTrain) {
+      setIsTraining(true);
+      trainModelMutation.mutate(contextToTrain.id);
+    }
+  };
+  
+  // Generate prefix from department, division, section
+  const generatePrefix = () => {
+    let prefix = '';
+    if (department) prefix += department.toUpperCase() + '-';
+    if (division) prefix += division.toUpperCase() + '-';
+    if (section) prefix += section.toUpperCase() + '-';
+    return prefix.length > 0 ? prefix : null;
+  };
+  
+  // Update prefix when any of the organizational units change
+  React.useEffect(() => {
+    setSelectedPrefix(generatePrefix());
+  }, [department, division, section]);
+  
+  // Update the form's name field when a prefix is selected
+  React.useEffect(() => {
+    if (selectedPrefix && !isEditMode) {
+      const currentName = form.getValues('name');
+      // Only prepend the prefix if the name doesn't already start with it
+      if (!currentName.startsWith(selectedPrefix)) {
+        form.setValue('name', selectedPrefix + currentName);
+      }
+    }
+  }, [selectedPrefix, isOpen]);
+
+  return (
+    <div>
+      {/* Context Naming Section */}
+      <div className="bg-white border border-[hsl(var(--msneutral-medium))] rounded-lg p-4 mb-6">
+        <h2 className="text-lg font-semibold mb-3">Context Naming</h2>
+        <p className="text-sm text-gray-600 mb-4">Define department, division, and section abbreviations to use as prefixes when creating new contexts</p>
+        
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <Label htmlFor="department" className="text-sm font-medium">Department</Label>
+            <div className="relative">
+              <Select
+                value={department}
+                onValueChange={(value) => setDepartment(value)}
+              >
+                <SelectTrigger className="w-full mt-1">
+                  <SelectValue placeholder="Select or type department" />
+                </SelectTrigger>
+                <SelectContent>
+                  <div className="mb-2">
+                    <Input
+                      placeholder="Search or type new..."
+                      className="mb-2"
+                      value={department}
+                      onChange={(e) => setDepartment(e.target.value)}
+                      maxLength={5}
+                    />
+                  </div>
+                  {/* Display unique existing department values */}
+                  {namingConventions
+                    .map(c => c.department)
+                    .filter((value, index, self) => 
+                      value && self.indexOf(value) === index
+                    )
+                    .map(dept => (
+                      <SelectItem key={dept} value={dept || ''}>
+                        {dept}
+                      </SelectItem>
+                    ))
+                  }
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-xs text-gray-500 mt-1">Department abbreviation (max 5 chars)</p>
+          </div>
+          
+          <div>
+            <Label htmlFor="division" className="text-sm font-medium">Division</Label>
+            <div className="relative">
+              <Select
+                value={division}
+                onValueChange={(value) => setDivision(value)}
+              >
+                <SelectTrigger className="w-full mt-1">
+                  <SelectValue placeholder="Select or type division" />
+                </SelectTrigger>
+                <SelectContent>
+                  <div className="mb-2">
+                    <Input
+                      placeholder="Search or type new..."
+                      className="mb-2"
+                      value={division}
+                      onChange={(e) => setDivision(e.target.value)}
+                      maxLength={5}
+                    />
+                  </div>
+                  {/* Display unique existing division values */}
+                  {namingConventions
+                    .map(c => c.division)
+                    .filter((value, index, self) => 
+                      value && self.indexOf(value) === index
+                    )
+                    .map(div => (
+                      <SelectItem key={div} value={div || ''}>
+                        {div}
+                      </SelectItem>
+                    ))
+                  }
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-xs text-gray-500 mt-1">Division abbreviation (max 5 chars)</p>
+          </div>
+          
+          <div>
+            <Label htmlFor="section" className="text-sm font-medium">Section</Label>
+            <div className="relative">
+              <Select
+                value={section}
+                onValueChange={(value) => setSection(value)}
+              >
+                <SelectTrigger className="w-full mt-1">
+                  <SelectValue placeholder="Select or type section" />
+                </SelectTrigger>
+                <SelectContent>
+                  <div className="mb-2">
+                    <Input
+                      placeholder="Search or type new..."
+                      className="mb-2"
+                      value={section}
+                      onChange={(e) => setSection(e.target.value)}
+                      maxLength={5}
+                    />
+                  </div>
+                  {/* Display unique existing section values */}
+                  {namingConventions
+                    .map(c => c.section)
+                    .filter((value, index, self) => 
+                      value && self.indexOf(value) === index
+                    )
+                    .map(sec => (
+                      <SelectItem key={sec} value={sec || ''}>
+                        {sec}
+                      </SelectItem>
+                    ))
+                  }
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-xs text-gray-500 mt-1">Section abbreviation (max 5 chars)</p>
+          </div>
+        </div>
+        
+        {selectedPrefix && (
+          <div className="mt-4 p-2 bg-blue-50 border border-blue-100 rounded">
+            <p className="text-sm">
+              <span className="font-medium">Current prefix:</span> {selectedPrefix}
+            </p>
+            <p className="text-xs text-gray-600 mt-1">
+              This prefix will be automatically applied when creating new contexts
+            </p>
+          </div>
+        )}
+        
+        <div className="flex justify-end mt-4">
+          <Button 
+            className="bg-[hsl(var(--msblue-primary))] hover:bg-[hsl(var(--msblue-secondary))] text-white hover:text-white"
+            onClick={() => {
+              if (department || division || section) {
+                // Save the naming convention to the database
+                const namingConventionData = {
+                  department: department || 'HRSD', // Default if empty
+                  division: division || null,
+                  section: section || null,
+                  createdBy: user?.id || null
+                };
+                
+                // Call the mutation to save the naming convention
+                saveNamingConventionMutation.mutate(namingConventionData);
+              } else {
+                toast({
+                  title: "Error",
+                  description: "Please enter at least one abbreviation.",
+                  variant: "destructive"
+                });
+              }
+            }}
+          >
+            Save Naming Convention
+          </Button>
+        </div>
+      </div>
+      
+      <div className="flex justify-between items-center mb-6">
+        <div>
+          <h1 className="text-2xl font-semibold">Manage Context</h1>
+          <p className="text-gray-600">Add, edit, or remove context sources from SharePoint</p>
+        </div>
+        <Button 
+          className="bg-[hsl(var(--msblue-primary))] hover:bg-[hsl(var(--msblue-secondary))] text-white hover:text-white"
+          onClick={handleAddButtonClick}
+        >
+          <Plus className="mr-2 h-4 w-4" />
+          Add New Context
+        </Button>
+      </div>
+      
+      <div className="bg-white border border-[hsl(var(--msneutral-medium))] rounded-lg overflow-hidden mb-8">
+        {isLoading ? (
+          <div className="text-center py-8">Loading contexts...</div>
+        ) : contexts.length === 0 ? (
+          <div className="text-center py-8 text-gray-500">
+            No contexts found. Add your first context to get started.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader className="bg-[hsl(var(--msneutral-light))]">
+                <TableRow>
+                  <TableHead className="text-xs font-semibold text-gray-600 uppercase tracking-wider">Name</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-600 uppercase tracking-wider">SharePoint URL</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-600 uppercase tracking-wider">Last Updated</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {contexts.map((context: Context) => (
+                  <TableRow key={context.id} className="hover:bg-[hsl(var(--msneutral-light))]">
+                    <TableCell className="whitespace-nowrap">
+                      <div className="text-sm font-medium text-gray-900">{context.name}</div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="text-sm text-gray-500 truncate max-w-xs">{context.sharePointUrl}</div>
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      <div className="text-sm text-gray-500">
+                        {context.lastUpdated ? format(new Date(context.lastUpdated), 'MMM d, yyyy') : 'N/A'}
+                      </div>
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                        context.status === 'active'
+                          ? 'bg-[hsl(var(--msstatus-success))] bg-opacity-10 text-[hsl(var(--msstatus-success))]'
+                          : context.status === 'indexing'
+                          ? 'bg-[hsl(var(--msstatus-warning))] bg-opacity-10 text-[hsl(var(--msstatus-warning))]'
+                          : 'bg-[hsl(var(--msstatus-error))] bg-opacity-10 text-[hsl(var(--msstatus-error))]'
+                      }`}>
+                        {context.status === 'active' ? 'Active' : context.status === 'indexing' ? 'Indexing' : 'Error'}
+                      </span>
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-sm">
+                      <Button 
+                        variant="ghost" 
+                        onClick={() => handleEditButtonClick(context)}
+                        className="text-[hsl(var(--msblue-primary))] hover:text-[hsl(var(--msblue-secondary))] hover:bg-transparent mr-2"
+                      >
+                        <Edit className="h-4 w-4" />
+                        <span className="ml-1">Edit</span>
+                      </Button>
+                      <Button 
+                        variant="ghost"
+                        onClick={() => handleDeleteButtonClick(context)}
+                        className="text-[hsl(var(--msstatus-error))] hover:text-red-700 hover:bg-transparent mr-2"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        <span className="ml-1">Delete</span>
+                      </Button>
+                      <Button 
+                        variant="ghost"
+                        onClick={() => handleTrainModelClick(context)}
+                        className="text-[hsl(var(--msblue-primary))] hover:text-[hsl(var(--msblue-secondary))] hover:bg-transparent"
+                      >
+                        <RefreshCw className="h-4 w-4" />
+                        <span className="ml-1">Train Model</span>
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </div>
+
+      {/* Add/Edit Context Dialog */}
+      <Dialog open={isOpen} onOpenChange={setIsOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{isEditMode ? 'Edit Context' : 'Add New Context'}</DialogTitle>
+          </DialogHeader>
+          
+          <Form {...form}>
+            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+              {/* Department, Division, and Section in a three-column layout */}
+              <div className="mb-4 grid grid-cols-3 gap-4">
+                <div>
+                  <FormLabel htmlFor="department-input">Department</FormLabel>
+                  {/* Use plain HTML input for better typing experience */}
+                  <input
+                    id="department-input"
+                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                    placeholder="5 chars max" 
+                    maxLength={5}
+                    value={department}
+                    autoComplete="new-password" 
+                    onChange={(e) => {
+                      const newValue = e.target.value.toUpperCase();
+                      setDepartment(newValue);
+                      
+                      // Update context name
+                      const currentName = form.getValues('name');
+                      const baseName = currentName.includes('-') 
+                        ? currentName.substring(currentName.lastIndexOf('-') + 1).trim()
+                        : currentName || "Context";
+                        
+                      let prefix = newValue;
+                      if (division) prefix += `-${division}`;
+                      if (section) prefix += `-${section}`;
+                      
+                      if (newValue) {
+                        form.setValue('name', `${prefix}-${baseName}`);
+                      }
+                    }}
+                  />
+                  <div className="text-xs mt-1">
+                    {namingConventions
+                      .map(c => c.department)
+                      .filter((v, i, a) => v && a.indexOf(v) === i)
+                      .map((dept, idx) => (
+                        <span 
+                          key={idx} 
+                          className="inline-block bg-gray-100 rounded px-2 py-1 mr-1 mb-1 cursor-pointer text-xs"
+                          onClick={() => {
+                            setDepartment(dept || '');
+                            form.setValue('department', dept || '');
+                            
+                            // Update name
+                            const currentName = form.getValues('name');
+                            const baseName = currentName.includes('-') 
+                              ? currentName.substring(currentName.lastIndexOf('-') + 1).trim()
+                              : currentName || "Context";
+                              
+                            let prefix = dept || '';
+                            if (division) prefix += `-${division}`;
+                            if (section) prefix += `-${section}`;
+                            
+                            form.setValue('name', `${prefix}-${baseName}`);
+                          }}
+                        >
+                          {dept}
+                        </span>
+                      ))
+                    }
+                  </div>
+                </div>
+                
+                <div>
+                  <FormLabel htmlFor="division-input">Division</FormLabel>
+                  <Input
+                    id="division-input"
+                    placeholder="5 chars max" 
+                    maxLength={5}
+                    value={division}
+                    autoComplete="off"
+                    onChange={(e) => {
+                      const newValue = e.target.value.toUpperCase();
+                      setDivision(newValue);
+                      
+                      // Update context name
+                      if (department) {
+                        const currentName = form.getValues('name');
+                        const baseName = currentName.includes('-') 
+                          ? currentName.substring(currentName.lastIndexOf('-') + 1).trim()
+                          : currentName || "Context";
+                          
+                        let prefix = department;
+                        if (newValue) prefix += `-${newValue}`;
+                        if (section) prefix += `-${section}`;
+                        
+                        form.setValue('name', `${prefix}-${baseName}`);
+                      }
+                    }}
+                  />
+                  <div className="text-xs mt-1">
+                    {namingConventions
+                      .filter(c => !department || c.department === department)
+                      .map(c => c.division)
+                      .filter((v, i, a) => v && a.indexOf(v) === i)
+                      .map((div, idx) => (
+                        <span 
+                          key={idx} 
+                          className="inline-block bg-gray-100 rounded px-2 py-1 mr-1 mb-1 cursor-pointer text-xs"
+                          onClick={() => {
+                            setDivision(div || '');
+                            form.setValue('division', div || '');
+                            
+                            // Update name if dept exists
+                            if (department) {
+                              const currentName = form.getValues('name');
+                              const baseName = currentName.includes('-') 
+                                ? currentName.substring(currentName.lastIndexOf('-') + 1).trim()
+                                : currentName || "Context";
+                                
+                              let prefix = department;
+                              if (div) prefix += `-${div}`;
+                              if (section) prefix += `-${section}`;
+                              
+                              form.setValue('name', `${prefix}-${baseName}`);
+                            }
+                          }}
+                        >
+                          {div}
+                        </span>
+                      ))
+                    }
+                  </div>
+                </div>
+                
+                <div>
+                  <FormLabel>Section</FormLabel>
+                  <FormField
+                    control={form.control}
+                    name="section"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormControl>
+                          <Input 
+                            placeholder="5 chars max" 
+                            maxLength={5}
+                            value={section}
+                            autoComplete="off"
+                            onKeyDown={(e) => {
+                              e.stopPropagation();
+                            }}
+                            onChange={(e) => {
+                              // Process the new value
+                              const newValue = e.target.value.toUpperCase();
+                              setSection(newValue);
+                              field.onChange(newValue);
+                              
+                              // Update name only if dept exists
+                              if (department) {
+                                const currentName = form.getValues('name');
+                                const baseName = currentName.includes('-') 
+                                  ? currentName.substring(currentName.lastIndexOf('-') + 1).trim()
+                                  : currentName || "Context";
+                                  
+                                let prefix = department;
+                                if (division) prefix += `-${division}`;
+                                if (newValue) prefix += `-${newValue}`;
+                                
+                                form.setValue('name', `${prefix}-${baseName}`);
+                              }
+                            }}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <div className="text-xs mt-1">
+                    {namingConventions
+                      .filter(c => 
+                        (!department || c.department === department) && 
+                        (!division || c.division === division)
+                      )
+                      .map(c => c.section)
+                      .filter((v, i, a) => v && a.indexOf(v) === i)
+                      .map((sec, idx) => (
+                        <span 
+                          key={idx} 
+                          className="inline-block bg-gray-100 rounded px-2 py-1 mr-1 mb-1 cursor-pointer text-xs"
+                          onClick={() => {
+                            setSection(sec || '');
+                            form.setValue('section', sec || '');
+                            
+                            // Update name if dept exists
+                            if (department) {
+                              const currentName = form.getValues('name');
+                              const baseName = currentName.includes('-') 
+                                ? currentName.substring(currentName.lastIndexOf('-') + 1).trim()
+                                : currentName || "Context";
+                                
+                              let prefix = department;
+                              if (division) prefix += `-${division}`;
+                              if (sec) prefix += `-${sec}`;
+                              
+                              form.setValue('name', `${prefix}-${baseName}`);
+                            }
+                          }}
+                        >
+                          {sec}
+                        </span>
+                      ))
+                    }
+                  </div>
+                </div>
+              </div>
+              
+              <FormField
+                control={form.control}
+                name="name"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Context Name</FormLabel>
+                    <FormControl>
+                      <Input placeholder="HR Policies" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              <FormField
+                control={form.control}
+                name="sharePointUrl"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>SharePoint URL</FormLabel>
+                    <FormControl>
+                      <Input placeholder="https://company.sharepoint.com/sites/..." {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              <FormField
+                control={form.control}
+                name="description"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Description</FormLabel>
+                    <FormControl>
+                      <Textarea
+                        placeholder="Brief description of this context"
+                        className="min-h-[80px]"
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              <DialogFooter className="mt-6">
+                <Button type="button" variant="outline" onClick={() => setIsOpen(false)}>
+                  Cancel
+                </Button>
+                <Button 
+                  type="submit" 
+                  className="bg-[hsl(var(--msblue-primary))] hover:bg-[hsl(var(--msblue-secondary))]"
+                  disabled={addMutation.isPending || editMutation.isPending}
+                >
+                  {addMutation.isPending || editMutation.isPending 
+                    ? 'Saving...' 
+                    : isEditMode ? 'Update Context' : 'Save Context'
+                  }
+                </Button>
+              </DialogFooter>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. This will permanently delete the context
+              "{contextToDelete?.name}" and all associated documents.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={handleDeleteConfirm}
+              className="bg-[hsl(var(--msstatus-error))] hover:bg-red-700"
+            >
+              {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      
+      {/* Model Training Confirmation Dialog */}
+      <AlertDialog open={trainDialogOpen} onOpenChange={setTrainDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Train Llama Model</AlertDialogTitle>
+            <AlertDialogDescription>
+              <p className="mb-2">
+                You're about to train the Llama model with documents from the context "{contextToTrain?.name}".
+              </p>
+              <p className="mb-2">
+                This process will:
+              </p>
+              <ul className="list-disc pl-6 mb-2 space-y-1">
+                <li>Process all documents in this context</li>
+                <li>Create embeddings for multi-modal content (.pdf, .docx, .xlsx, .csv files and images)</li>
+                <li>Update the model's knowledge base for improved responses</li>
+              </ul>
+              <p>
+                The training process may take several minutes depending on the size and number of documents.
+              </p>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isTraining}>Cancel</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={handleTrainModelConfirm}
+              className="bg-[hsl(var(--msblue-primary))] hover:bg-[hsl(var(--msblue-secondary))]"
+              disabled={isTraining}
+            >
+              {isTraining ? (
+                <>
+                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                  Training...
+                </>
+              ) : (
+                'Start Training'
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+};
+
+export default ManageContext;
